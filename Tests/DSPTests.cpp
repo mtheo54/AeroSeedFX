@@ -1,5 +1,6 @@
 // Tests du coeur DSP (hors JUCE) :  g++ -O2 -std=c++17 DSPTests.cpp -o tests && ./tests
 #include "../Source/AeroDSP.h"
+#include "../Source/AeroMood.h"
 #include <cstdio>
 #include <random>
 
@@ -152,6 +153,82 @@ int main()
         std::printf ("  cutoff=%g reso=%g drive=%g fType=%d dist=%d order=%d crush=%d bits=%d rate=%g depth=%g mix=%g key=%d scale=%d morph=%g gate=%g mb=%d b=%d/%d/%d x1=%g x2=%g\n",
             p.cutoff, p.resonance, p.drive, p.filterType, p.distType, p.filterOrder, (int) p.crushOn, p.bits, p.chorusRate, p.chorusDepth,
             p.chorusMix, p.key, p.scale, p.morph, p.gateDb, (int) p.multiband, p.bandBits[0], p.bandBits[1], p.bandBits[2], p.xover1, p.xover2);
+    }
+
+    std::printf ("[11] Mood : accents, majuscules et ponctuation\n");
+    {
+        const auto n = aeromood::normalizeFrench ("\xC3\x89th\xC3\xA9r\xC3\xA9" "e, M\xC3\x89TALLIQUE & sombre!");   // "Etheree, METALLIQUE & sombre!" avec accents
+        const auto t = aeromood::parse ("\xC3\x89th\xC3\xA9r\xC3\xA9" "e, M\xC3\x89TALLIQUE & sombre!");
+        CHECK (n.find ("etheree") != std::string::npos && n.find ("metallique") != std::string::npos, "normalisation : \"%s\"", n.c_str());
+        CHECK (t.matched.size() == 3 && t.matched[0] == "etheree" && t.matched[1] == "metallique" && t.matched[2] == "sombre",
+               "%d mots reconnus", (int) t.matched.size());
+    }
+
+    std::printf ("[12] Mood : addition des mots et bornes\n");
+    {
+        const auto t = aeromood::parse ("sombre chaotique metallique");
+        CHECK (std::abs (t.axes[Bright] + 0.8) < 1e-6, "lumineux = %.2f (sombre -1 + metallique +0.2)", t.axes[Bright]);
+        CHECK (std::abs (t.axes[Calm] + 1.0) < 1e-6, "serein = %.2f (borne a -1)", t.axes[Calm]);
+        CHECK (t.has[Grain] && ! t.has[Warm], "axes mentionnes detectes");
+        const auto u = aeromood::parse ("chaud froid");   // s'annulent : l'axe est quand meme 'mentionne'
+        CHECK (u.has[Warm] && std::abs (u.axes[Warm]) < 1e-6, "mots opposes : chaud = %.2f, axe mentionne", u.axes[Warm]);
+        CHECK (aeromood::parse ("bonjour piano 123").matched.empty(), "mots inconnus ignores");
+    }
+
+    std::printf ("[13] Mood : le texte l'emporte sur l'image, axe par axe\n");
+    {
+        MoodAxes img; for (int a = 0; a < numMoodAxes; ++a) img.v[a] = 0.5;
+        const auto m = aeromood::merge (aeromood::parse ("sombre"), &img);
+        CHECK (m[Bright] == -1.0 && m[Warm] == 0.5 && m[Grain] == 0.5, "lumineux %.1f (texte), chaud %.1f (image)", m[Bright], m[Warm]);
+        const auto z = aeromood::merge (aeromood::parse (""), nullptr);
+        CHECK (z[Bright] == 0.0 && z[Dense] == 0.0, "sans texte ni image : neutre");
+    }
+
+    std::printf ("[14] Mood : analyse d'image\n");
+    {
+        aeromood::CellStats black[aeromood::kCells];
+        for (auto& c : black) c = { 0, 0, 0, 0, 0 };
+        const auto mb = aeromood::fromCells (black);
+        CHECK (mb[Bright] == -1.0 && mb[Calm] == 1.0, "image noire unie : sombre %.2f, serein %.2f", mb[Bright], mb[Calm]);
+
+        aeromood::CellStats warm[aeromood::kCells];
+        const double L = 0.299 * 230 + 0.587 * 150 + 0.114 * 60;
+        for (auto& c : warm) c = { 230, 60, L, 0, 170 };
+        const auto mw = aeromood::fromCells (warm);
+        CHECK (mw[Warm] == 1.0 && mw[Vivid] == 1.0 && mw[Bright] > 0.3, "orange vif : chaud %.2f, vif %.2f, lumineux %.2f", mw[Warm], mw[Vivid], mw[Bright]);
+
+        aeromood::CellStats checker[aeromood::kCells];   // damier contraste : chaotique et dense
+        for (int i = 0; i < aeromood::kCells; ++i)
+        {
+            const double v = ((i % 16 + i / 16) % 2) ? 230.0 : 25.0;
+            checker[i] = { v, v, v, 900.0, 0 };
+        }
+        const auto mc = aeromood::fromCells (checker);
+        CHECK (mc[Calm] < -0.5 && mc[Dense] == 1.0 && mc[Grain] > 0.9, "damier : serein %.2f, dense %.2f, grain %.2f", mc[Calm], mc[Dense], mc[Grain]);
+    }
+
+    std::printf ("[15] Mood : chaque mot des phrases d'exemple est reconnu\n");
+    {
+        int missing = 0;
+        for (int i = 0; i < aeromood::kNumExamples; ++i)
+        {
+            const std::string ex = aeromood::example (i);
+            const auto t = aeromood::parse (ex);
+            int words = 1; for (char c : ex) if (c == ' ') ++words;
+            if ((int) t.matched.size() != words) { std::printf ("     manque dans \"%s\"\n", ex.c_str()); ++missing; }
+        }
+        CHECK (missing == 0, "%d exemple(s) incomplet(s)", missing);
+    }
+
+    std::printf ("[16] Seed + mood -> reglages (a comparer avec la maquette)\n");
+    {
+        MoodAxes a; a.v[Bright] = -0.8; a.v[Warm] = 0.3; a.v[Vivid] = 0.5; a.v[Calm] = -1.0; a.v[Dense] = 0.2; a.v[Grain] = 1.0;
+        const auto p = makePatch (0x0123456789ABCDEFULL, a);
+        std::printf ("  cutoff=%g reso=%g drive=%g fType=%d dist=%d order=%d crush=%d bits=%d rate=%g depth=%g mix=%g key=%d scale=%d morph=%g gate=%g mb=%d b=%d/%d/%d x1=%g x2=%g\n",
+            p.cutoff, p.resonance, p.drive, p.filterType, p.distType, p.filterOrder, (int) p.crushOn, p.bits, p.chorusRate, p.chorusDepth,
+            p.chorusMix, p.key, p.scale, p.morph, p.gateDb, (int) p.multiband, p.bandBits[0], p.bandBits[1], p.bandBits[2], p.xover1, p.xover2);
+        const auto q = makePatch (0x0123456789ABCDEFULL);
+        CHECK (q.cutoff == 287 && q.drive == 2.67, "sans mood : reglages identiques a l'ancienne version");
     }
 
     std::printf ("\n%s (%d echec(s))\n", failures ? "ECHEC" : "TOUT EST OK", failures);
