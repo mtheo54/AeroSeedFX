@@ -1,0 +1,55 @@
+name: Compiler AeroSeed FX
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Tests du moteur audio
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compiler et lancer les tests
+        run: |
+          g++ -O2 -std=c++17 Tests/DSPTests.cpp -o dsptests
+          ./dsptests
+
+  windows:
+    name: Plugin Windows (VST3 + Standalone)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurer (telecharge JUCE 7)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Compiler
+        run: cmake --build build --config Release --parallel 4
+      - name: Rassembler le plugin
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse "build/AeroSeedFX_artefacts/Release/VST3/*" out/
+          Copy-Item -Recurse "build/AeroSeedFX_artefacts/Release/Standalone/*" out/
+      - name: Mettre le plugin a disposition
+        uses: actions/upload-artifact@v4
+        with:
+          name: AeroSeedFX-Windows
+          path: out/
+
+  macos:
+    name: Plugin Mac (facultatif)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurer
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+      - name: Compiler
+        run: cmake --build build --config Release --parallel 4
+      - name: Mettre le plugin a disposition
+        uses: actions/upload-artifact@v4
+        with:
+          name: AeroSeedFX-Mac
+          path: |
+            build/AeroSeedFX_artefacts/Release/VST3/
+            build/AeroSeedFX_artefacts/Release/Standalone/
