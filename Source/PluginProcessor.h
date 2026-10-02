@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "AeroDSP.h"
+#include "AeroMood.h"
 
 //==============================================================================
 // FIFO sans verrou audio -> interface (un producteur : thread audio, un consommateur : interface)
@@ -59,16 +60,26 @@ public:
     //==============================================================================
     // Thread interface uniquement
     void generatePatchFromImage (const juce::Image& img);
-    void resetToSeed();
+    void resetToSeed();                               // revient TOUJOURS au son de l'image deposee (si une image existe)
+    void exploreAero();                               // bouton AERO : nouvelle seed aleatoire, meme mood
+    void setMoodText (const juce::String& text);      // mood tape par l'utilisateur (re-applique le patch)
     void toggleNote (int pitchClass);                 // clavier de la section Harmonique
     void setParameterReal (const char* id, float realValue);
 
-    static uint64_t computeSeedFromImage (const juce::Image& img);
+    // une seule lecture de l'image : seed (hash) + mesures de mood
+    static uint64_t analyseImage (const juce::Image& img, aerodsp::MoodAxes& moodOut);
 
-    bool        hasSeed() const               { return seedValid.load(); }
-    uint64_t    getSeed() const               { return currentSeed.load(); }
-    aerodsp::Patch getSeedPatch() const       { return seedValid.load() ? aerodsp::makePatch (currentSeed.load()) : aerodsp::Patch{}; }
+    bool        hasSeed() const               { return activeValid.load(); }      // un patch de reference existe (image ou AERO)
+    bool        hasImage() const              { return imageValid.load(); }
+    bool        isAeroVariant() const         { return activeValid.load() && (! imageValid.load() || activeSeed.load() != imageSeed.load()); }
+    uint64_t    getSeed() const               { return activeSeed.load(); }
+    aerodsp::Patch getSeedPatch() const;      // reglages de reference (seed active + mood)
     bool        isEditedFromSeed() const;
+
+    aerodsp::MoodAxes getMergedMood() const;
+    bool        getImageMood (aerodsp::MoodAxes& out) const;
+    juce::String getMoodText() const;
+    juce::StringArray getMatchedMoodWords() const;
     juce::Image getThumbnail() const;
     int         getThumbnailVersion() const   { return thumbVersion.load(); }
     float       getCyclePhase() const         { return cyclePhase.load(); }
@@ -85,8 +96,18 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameters();
     void applyPatchToParameters (const aerodsp::Patch& p);
 
-    std::atomic<bool>     seedValid { false };
-    std::atomic<uint64_t> currentSeed { 0 };
+    void applyActivePatch();
+
+    // seed de l'image deposee / seed active (= celle de l'image, ou une variante AERO)
+    std::atomic<bool>     imageValid { false }, activeValid { false };
+    std::atomic<uint64_t> imageSeed { 0 }, activeSeed { 0 };
+
+    // mood (modifie sur le thread interface ; verrou pour la sauvegarde du projet)
+    mutable juce::CriticalSection moodLock;
+    aerodsp::MoodAxes  imageMood;
+    bool               imageMoodValid = false;
+    juce::String       moodText;
+    aeromood::TextMood textMood;
 
     // ---- audio
     double currentSampleRate = 44100.0;

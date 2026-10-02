@@ -56,12 +56,37 @@ struct Patch
     int   key = 0;  int scale = 1;  double morph = 0.0;  double gateDb = -80.0;
 };
 
+//==============================================================================
+// MOOD : 6 axes bipolaires (-1..1), issus de l'image et/ou du texte tape par l'utilisateur.
+// Ils ne remplacent pas la seed : ils DEPLACENT legerement certains tirages (meme formule que la maquette).
+enum MoodAxis { Bright = 0, Warm, Vivid, Calm, Dense, Grain, numMoodAxes };
+
+struct MoodAxes
+{
+    double v[numMoodAxes] {};
+    double operator[] (int i) const { return v[i]; }
+};
+
 // ORDRE DE TIRAGE FIGE (22 tirages). Ne jamais le modifier : ajouter les nouveaux tirages A LA FIN.
-inline Patch makePatch (uint64_t seed)
+inline Patch makePatch (uint64_t seed, const MoodAxes& mood = {})
 {
     uint64_t s = seed;
     double u[22];
     for (auto& v : u) v = nextUnit (s);
+
+    // biais de mood : u' = clamp (u + quantite * axe, 0, 1)
+    auto bias = [&] (int i, double amount, int axis) { u[i] = std::clamp (u[i] + amount * mood[axis], 0.0, 1.0); };
+    bias (0,   0.16, Bright);   // cutoff         : lumineux -> plus ouvert
+    bias (3,  -0.22, Warm);     // type de filtre : chaud -> passe-bas
+    bias (4,  -0.15, Warm);     // type de distortion : chaud -> tanh (douce)
+    bias (2,   0.22, Vivid);    // drive          : vif -> plus de saturation
+    bias (1,  -0.25, Calm);     // resonance      : serein -> moins de resonance
+    bias (6,  -0.22, Dense);    // bitcrusher on  : dense -> plus probable
+    bias (7,  -0.25, Grain);    // bits           : granuleux -> moins de bits
+    bias (9,   0.20, Dense);    // chorus depth   : dense -> plus profond
+    bias (13,  0.22, Calm);     // morph          : serein -> plus harmonique
+    bias (15, -0.20, Grain);    // gate           : granuleux -> laisse plus de residus
+    bias (16, -0.15, Dense);    // multibande     : dense -> plus probable
 
     Patch p;
     p.cutoff      = std::round (200.0 * std::pow (75.0, u[0]));
@@ -71,7 +96,7 @@ inline Patch makePatch (uint64_t seed)
     p.distType    = std::min (2, (int) std::floor (u[4] * 3.0));
     p.filterOrder = u[5] < 0.5 ? 0 : 1;
     p.crushOn     = u[6] < 0.3;
-    p.bits        = (int) std::floor (4.0 + u[7] * 8.0);
+    p.bits        = std::min (12, (int) std::floor (4.0 + u[7] * 8.0));
     p.chorusRate  = round2 (0.2 + u[8] * 4.8);
     p.chorusDepth = std::round (10.0 + u[9] * 70.0);
     p.chorusMix   = std::round (u[10] * 60.0);

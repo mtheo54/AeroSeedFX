@@ -64,6 +64,7 @@ namespace
 AeroSeedAudioProcessorEditor::AeroSeedAudioProcessorEditor (AeroSeedAudioProcessor& p)
     : AudioProcessorEditor (&p), proc (p),
       spectrum (p, engine),
+      moodPanel (p),
       triggerBar (*p.apvts.getParameter ("TRIG_START"), *p.apvts.getParameter ("TRIG_END")),
       editPanel (p, engine),
       intro (anim)
@@ -88,6 +89,13 @@ AeroSeedAudioProcessorEditor::AeroSeedAudioProcessorEditor (AeroSeedAudioProcess
     viewSpectrum.setToggleState (true, juce::dontSendNotification);
     viewImage.onClick    = [this] { spectrum.imageOnly = viewImage.getToggleState(); spectrum.repaint(); };
     viewSpectrum.onClick = [this] { spectrum.imageOnly = ! viewSpectrum.getToggleState(); spectrum.repaint(); };
+
+    // --- panneau Mood (s'ouvre dans le grand ecran et repousse le spectre)
+    addChildComponent (moodPanel);
+    moodButton.setButtonText ("Mood");
+    moodButton.setClickingTogglesState (true);
+    moodButton.onClick = [this] { moodOpen = moodButton.getToggleState(); wallpaperMenu.setVisible (false); };
+    addAndMakeVisible (moodButton);
 
     // --- pastille de graine, fonds d'ecran
     seedChip.onClick = [this] { chooseImageFile(); };
@@ -165,11 +173,21 @@ AeroSeedAudioProcessorEditor::~AeroSeedAudioProcessorEditor()
 }
 
 //==============================================================================
+// le spectre glisse vers la droite quand le panneau Mood s'ouvre (largeur 1200 -> 824)
+void AeroSeedAudioProcessorEditor::layoutSpectrum()
+{
+    const int shift = juce::roundToInt (376.0f * moodAnim);
+    const auto r = rSpectrum.withTrimmedLeft (shift);
+    if (spectrum.getBounds() != r) spectrum.setBounds (r);
+    viewImage.setBounds (r.getX() + 14, r.getBottom() - 50, 96, 38);
+    viewSpectrum.setBounds (r.getX() + 114, r.getBottom() - 50, 110, 38);
+}
+
 void AeroSeedAudioProcessorEditor::resized()
 {
-    spectrum.setBounds (rSpectrum);
-    viewImage.setBounds (rSpectrum.getX() + 14, rSpectrum.getBottom() - 50, 96, 38);
-    viewSpectrum.setBounds (rSpectrum.getX() + 114, rSpectrum.getBottom() - 50, 110, 38);
+    layoutSpectrum();
+    moodPanel.setBounds (rSpectrum.getX(), rSpectrum.getY(), 360, rSpectrum.getHeight());
+    moodButton.setBounds (1052, 68, 190, 42);
     seedChip.setBounds (40, 34, 320, 70);
     wallpaperButton.setBounds (1052, 18, 190, 44);
     wallpaperMenu.setBounds (716, 66, 524, 200);
@@ -313,6 +331,18 @@ void AeroSeedAudioProcessorEditor::timerCallback()
         case IntroLayer::Done: break;
     }
 
+    // --- panneau Mood : ouverture / fermeture en douceur
+    const float target = moodOpen ? 1.0f : 0.0f;
+    if (std::abs (moodAnim - target) > 0.001f)
+    {
+        moodAnim += (target - moodAnim) * juce::jmin (1.0f, dt * 9.0f);
+        if (std::abs (moodAnim - target) < 0.002f) moodAnim = target;
+        layoutSpectrum();
+        moodPanel.setVisible (moodAnim > 0.01f);
+        moodPanel.setAlpha (moodAnim);
+        moodPanel.setTransform (juce::AffineTransform::translation ((moodAnim - 1.0f) * 14.0f, 0.0f));
+    }
+
     bubbles.update();
     weather.update (themeIndex < kFirstPhoto ? 1.0f - proc.value ("MIX") : 0.0f, dt);
 
@@ -323,7 +353,11 @@ void AeroSeedAudioProcessorEditor::timerCallback()
     }
 
     const int v = proc.getThumbnailVersion();
-    if (v != lastThumbVersion) { lastThumbVersion = v; refreshSeedInfo(); }
+    if (v != lastThumbVersion || proc.getSeed() != lastSeedShown || proc.isAeroVariant() != lastAeroShown)
+    {
+        lastThumbVersion = v;  lastSeedShown = proc.getSeed();  lastAeroShown = proc.isAeroVariant();
+        refreshSeedInfo();
+    }
 
     triggerBar.setPlayhead (proc.getCyclePhase());
     const bool seq = proc.intValue ("SYNC_MODE") > 0;
@@ -379,6 +413,7 @@ void AeroSeedAudioProcessorEditor::applyEntrances (float t)
     enter (viewSpectrum, 0.85f, 0.95f, Zoom);
     enter (seedChip, 1.0f, 0.85f, SlideL);
     enter (wallpaperButton, 1.1f, 0.85f, SlideR);
+    enter (moodButton, 1.2f, 0.85f, SlideR);
     for (int i = 0; i < 5; ++i) enter (*cards[(size_t) i], 1.05f + 0.13f * i, 0.8f, Rise);
     for (auto* c : { (juce::Component*) &syncCombo, (juce::Component*) &triggerBar, (juce::Component*) &mixKnob }) enter (*c, 1.75f, 0.85f, Rise);
 }
@@ -387,17 +422,12 @@ void AeroSeedAudioProcessorEditor::applyEntrances (float t)
 void AeroSeedAudioProcessorEditor::refreshModules()
 {
     auto txt = [this] (const char* id) { return proc.apvts.getParameter (id)->getCurrentValueAsText(); };
-    const float cutoff = proc.value ("CUTOFF");
-    const juce::String dot = fr (L" \u00b7 ");
     const bool mb = proc.value ("MB_ON") > 0.5f;
-
-    cards[0]->setContent (proc.value ("H_ON") > 0.5f, txt ("H_KEY") + " " + txt ("H_SCALE"), "Morph " + juce::String (proc.intValue ("H_MORPH")) + " %");
-    cards[1]->setContent (proc.value ("F_ON") > 0.5f, txt ("FILTER_TYPE"),
-                          (cutoff >= 1000.0f ? juce::String (cutoff / 1000.0f, 1) + " kHz" : juce::String (juce::roundToInt (cutoff)) + " Hz") + dot + "Q " + juce::String (proc.value ("RESO"), 2));
-    cards[2]->setContent (proc.value ("D_ON") > 0.5f, txt ("DIST_TYPE"), "Drive x" + juce::String (proc.value ("DRIVE"), 2));
-    cards[3]->setContent (proc.value ("CRUSH_ON") > 0.5f, mb ? "Multibande" : juce::String (proc.intValue ("BITS")) + " bits",
-                          mb ? juce::String (proc.intValue ("B1")) + " / " + juce::String (proc.intValue ("B2")) + " / " + juce::String (proc.intValue ("B3")) + " bits" : "Crush global");
-    cards[4]->setContent (proc.value ("C_ON") > 0.5f, juce::String (proc.value ("CH_RATE"), 2) + " Hz", "Mix " + juce::String (proc.intValue ("CH_MIX")) + " %");
+    cards[0]->setContent (proc.value ("H_ON") > 0.5f, txt ("H_KEY") + " " + txt ("H_SCALE"));
+    cards[1]->setContent (proc.value ("F_ON") > 0.5f, txt ("FILTER_TYPE"));
+    cards[2]->setContent (proc.value ("D_ON") > 0.5f, txt ("DIST_TYPE"));
+    cards[3]->setContent (proc.value ("CRUSH_ON") > 0.5f, mb ? juce::String ("Multibande") : juce::String (proc.intValue ("BITS")) + " bits");
+    cards[4]->setContent (proc.value ("C_ON") > 0.5f, juce::String (proc.value ("CH_RATE"), 2) + " Hz");
 }
 
 void AeroSeedAudioProcessorEditor::refreshSeedInfo()
@@ -406,11 +436,14 @@ void AeroSeedAudioProcessorEditor::refreshSeedInfo()
     spectrum.background = thumb;
     spectrum.repaint();
     editPanel.setSpectrumImage (thumb);
-    if (proc.hasSeed())
-        seedChip.set (thumb, "Seed " + juce::String::toHexString ((juce::int64) proc.getSeed()).paddedLeft ('0', 16).substring (0, 8).toUpperCase(),
-                      "Clique pour changer d'image");
-    else
+    const auto code = juce::String::toHexString ((juce::int64) proc.getSeed()).paddedLeft ('0', 16).substring (0, 8).toUpperCase();
+    if (! proc.hasSeed())
         seedChip.set ({}, "Aucune image", "Glisse une image sur le spectre");
+    else if (proc.isAeroVariant())
+        seedChip.set (proc.hasImage() ? thumb : juce::Image(), "AERO " + code,
+                      proc.hasImage() ? juce::String ("Variante - clique pour changer d'image") : juce::String ("Glisse une image sur le spectre"));
+    else
+        seedChip.set (thumb, "Seed " + code, "Clique pour changer d'image");
 }
 
 void AeroSeedAudioProcessorEditor::openEditor (int tab)

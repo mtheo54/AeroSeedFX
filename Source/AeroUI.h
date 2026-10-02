@@ -153,6 +153,20 @@ public:
         label.setFont (getComboBoxFont (box));
     }
 
+    // champ de saisie en verre
+    void fillTextEditorBackground (juce::Graphics& g, int w, int h, juce::TextEditor&) override
+    {
+        const auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h).reduced (1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.22f));
+        g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
+    }
+    void drawTextEditorOutline (juce::Graphics& g, int w, int h, juce::TextEditor& ed) override
+    {
+        const auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h).reduced (1.0f);
+        g.setColour (juce::Colours::white.withAlpha (ed.hasKeyboardFocus (true) ? 0.95f : 0.55f));
+        g.drawRoundedRectangle (r, r.getHeight() * 0.5f, 1.2f);
+    }
+
     // bouton rotatif : bille de verre
     void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1, juce::Slider&) override
     {
@@ -525,9 +539,9 @@ public:
 
     std::function<void()> onOpen, onToggle;
 
-    void setContent (bool on, const juce::String& l1, const juce::String& l2)
+    void setContent (bool on, const juce::String& l1)
     {
-        if (on != enabled || l1 != line1 || l2 != line2) { enabled = on; line1 = l1; line2 = l2; repaint(); }
+        if (on != enabled || l1 != line1) { enabled = on; line1 = l1; repaint(); }
     }
 
     void paint (juce::Graphics& g) override
@@ -540,10 +554,8 @@ public:
         g.setColour (accent.withAlpha (0.45f));  g.fillEllipse (dotR.expanded (3.0f));
         g.setColour (accent);                    g.fillEllipse (dotR);
         shadowText (g, title, r.toNearestInt().reduced (36, 12).withHeight (24), juce::Justification::centredLeft, juce::Colours::white, true);
-        g.setFont (uiFont (21.0f, juce::Font::bold));
-        shadowText (g, line1, r.toNearestInt().reduced (16, 0).withY ((int) r.getY() + 42).withHeight (26), juce::Justification::centredLeft, juce::Colours::white, true);
-        g.setFont (uiFont (14.0f));
-        shadowText (g, line2, r.toNearestInt().reduced (16, 0).withY ((int) r.getY() + 68).withHeight (20), juce::Justification::centredLeft, juce::Colours::white.withAlpha (0.92f), true);
+        g.setFont (uiFont (22.0f, juce::Font::bold));
+        shadowText (g, line1, r.toNearestInt().reduced (16, 0).withY ((int) r.getY() + 48).withHeight (30), juce::Justification::centredLeft, juce::Colours::white, true);
         auto acc = juce::Rectangle<float> (r.getX() + 16.0f, r.getBottom() - 12.0f, r.getWidth() - 32.0f, 3.0f);
         g.setColour (accent.withAlpha (0.35f)); g.fillRoundedRectangle (acc.expanded (0.0f, 2.0f), 3.0f);
         g.setColour (accent);                   g.fillRoundedRectangle (acc, 1.5f);
@@ -567,7 +579,7 @@ public:
 
 private:
     juce::Rectangle<float> switchRect() const { return { (float) getWidth() - 62.0f, 16.0f, 42.0f, 22.0f }; }
-    juce::String title, line1, line2;
+    juce::String title, line1;
     juce::Colour accent;
     bool enabled = true, hover = false;
 };

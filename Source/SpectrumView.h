@@ -88,7 +88,7 @@ public:
 
         if (! imageOnly) paintSpectrum (g, bounds);
 
-        if (! proc.hasSeed())
+        if (! proc.hasImage())
         {
             auto pill = juce::Rectangle<float> (380.0f, 34.0f).withCentre ({ bounds.getCentreX(), bounds.getBottom() - 30.0f });
             paintGlass (g, pill, 17.0f);

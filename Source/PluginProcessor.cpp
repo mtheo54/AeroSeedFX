@@ -266,13 +266,15 @@ void AeroSeedAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
 
 //==============================================================================
 // SEED
-uint64_t AeroSeedAudioProcessor::computeSeedFromImage (const juce::Image& img)
+uint64_t AeroSeedAudioProcessor::analyseImage (const juce::Image& img, aerodsp::MoodAxes& moodOut)
 {
-    constexpr int grid = 16;
+    constexpr int grid = aeromood::kGrid;
     uint64_t hash = 14695981039346656037ULL;
+    moodOut = {};
     const int w = img.getWidth(), h = img.getHeight();
     if (w <= 0 || h <= 0) return hash;
 
+    aeromood::CellStats cells[aeromood::kCells];
     juce::Image::BitmapData bmp (img, juce::Image::BitmapData::readOnly);
     for (int gy = 0; gy < grid; ++gy)
         for (int gx = 0; gx < grid; ++gx)
@@ -283,11 +285,28 @@ uint64_t AeroSeedAudioProcessor::computeSeedFromImage (const juce::Image& img)
             x0 = juce::jmin (x0, x1 - 1);                  y0 = juce::jmin (y0, y1 - 1);
 
             uint64_t r = 0, g = 0, b = 0, c = 0;
+            double lSum = 0.0, lSq = 0.0, satSum = 0.0;
             for (int y = y0; y < y1; ++y)
-                for (int x = x0; x < x1; ++x) { const auto px = bmp.getPixelColour (x, y); r += px.getRed(); g += px.getGreen(); b += px.getBlue(); ++c; }
+                for (int x = x0; x < x1; ++x)
+                {
+                    const auto px = bmp.getPixelColour (x, y);
+                    const int R = px.getRed(), G = px.getGreen(), B = px.getBlue();
+                    r += (uint64_t) R; g += (uint64_t) G; b += (uint64_t) B; ++c;
+                    const double L = 0.299 * R + 0.587 * G + 0.114 * B;
+                    lSum += L;  lSq += L * L;
+                    satSum += juce::jmax (R, G, B) - juce::jmin (R, G, B);
+                }
 
             for (uint64_t v : { (r / c) >> 4, (g / c) >> 4, (b / c) >> 4 }) { hash ^= v; hash *= 1099511628211ULL; }
+
+            auto& cell = cells[gy * grid + gx];
+            const double n = (double) c;
+            cell.meanR = (double) r / n;  cell.meanB = (double) b / n;
+            cell.meanL = lSum / n;        cell.varL  = juce::jmax (0.0, lSq / n - cell.meanL * cell.meanL);
+            cell.sat   = satSum / n;
         }
+
+    moodOut = aeromood::fromCells (cells);
     return hash;
 }
 
@@ -325,10 +344,47 @@ void AeroSeedAudioProcessor::applyPatchToParameters (const aerodsp::Patch& p)
     setParameterReal ("CH_MIX",   (float) p.chorusMix);
 }
 
+aerodsp::MoodAxes AeroSeedAudioProcessor::getMergedMood() const
+{
+    const juce::ScopedLock sl (moodLock);
+    return aeromood::merge (textMood, imageMoodValid ? &imageMood : nullptr);
+}
+
+aerodsp::Patch AeroSeedAudioProcessor::getSeedPatch() const
+{
+    return activeValid.load() ? aerodsp::makePatch (activeSeed.load(), getMergedMood()) : aerodsp::Patch{};
+}
+
+bool AeroSeedAudioProcessor::getImageMood (aerodsp::MoodAxes& out) const
+{
+    const juce::ScopedLock sl (moodLock);
+    out = imageMood;
+    return imageMoodValid;
+}
+
+juce::String AeroSeedAudioProcessor::getMoodText() const
+{
+    const juce::ScopedLock sl (moodLock);
+    return moodText;
+}
+
+juce::StringArray AeroSeedAudioProcessor::getMatchedMoodWords() const
+{
+    const juce::ScopedLock sl (moodLock);
+    juce::StringArray a;
+    for (const auto& w : textMood.matched) a.add (juce::String (w));
+    return a;
+}
+
+void AeroSeedAudioProcessor::applyActivePatch()
+{
+    if (activeValid.load()) applyPatchToParameters (getSeedPatch());
+}
+
 bool AeroSeedAudioProcessor::isEditedFromSeed() const
 {
-    if (! seedValid.load()) return false;
-    const auto p = aerodsp::makePatch (currentSeed.load());
+    if (! activeValid.load()) return false;
+    const auto p = getSeedPatch();
     auto diff = [] (float a, double b) { return std::abs (a - (float) b) > 1.0e-3f * juce::jmax (1.0f, (float) std::abs (b)); };
 
     return value ("H_ON") < 0.5f || value ("F_ON") < 0.5f || value ("D_ON") < 0.5f || value ("C_ON") < 0.5f
@@ -353,15 +409,36 @@ void AeroSeedAudioProcessor::generatePatchFromImage (const juce::Image& img)
     { const juce::ScopedLock sl (thumbLock); thumbnail = thumb; }
     ++thumbVersion;
 
-    const auto seed = computeSeedFromImage (img);
-    currentSeed.store (seed);
-    seedValid.store (true);
-    applyPatchToParameters (aerodsp::makePatch (seed));
+    aerodsp::MoodAxes mood;
+    const auto seed = analyseImage (img, mood);
+    { const juce::ScopedLock sl (moodLock); imageMood = mood; imageMoodValid = true; }
+    imageSeed.store (seed);   imageValid.store (true);
+    activeSeed.store (seed);  activeValid.store (true);
+    applyActivePatch();
 }
 
 void AeroSeedAudioProcessor::resetToSeed()
 {
-    if (seedValid.load()) applyPatchToParameters (aerodsp::makePatch (currentSeed.load()));
+    if (imageValid.load()) activeSeed.store (imageSeed.load());   // le son exact de l'image, meme apres AERO
+    applyActivePatch();
+}
+
+void AeroSeedAudioProcessor::exploreAero()
+{
+    activeSeed.store ((uint64_t) juce::Random::getSystemRandom().nextInt64());
+    activeValid.store (true);
+    applyActivePatch();
+}
+
+void AeroSeedAudioProcessor::setMoodText (const juce::String& text)
+{
+    {
+        const juce::ScopedLock sl (moodLock);
+        if (text == moodText) return;
+        moodText = text;
+        textMood = aeromood::parse (text.toStdString());
+    }
+    applyActivePatch();   // le nouveau mood reoriente le patch courant (comme dans la maquette)
 }
 
 void AeroSeedAudioProcessor::toggleNote (int pc)
@@ -383,7 +460,18 @@ juce::Image AeroSeedAudioProcessor::getThumbnail() const
 void AeroSeedAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
-    if (seedValid.load()) state.setProperty ("seed", juce::String::toHexString ((juce::int64) currentSeed.load()), nullptr);
+    if (activeValid.load()) state.setProperty ("seed",      juce::String::toHexString ((juce::int64) activeSeed.load()), nullptr);
+    if (imageValid.load())  state.setProperty ("imageSeed", juce::String::toHexString ((juce::int64) imageSeed.load()), nullptr);
+    {
+        const juce::ScopedLock sl (moodLock);
+        state.setProperty ("moodText", moodText, nullptr);
+        if (imageMoodValid)
+        {
+            juce::StringArray v;
+            for (double x : imageMood.v) v.add (juce::String (x, 4));
+            state.setProperty ("imageMood", v.joinIntoString (","), nullptr);
+        }
+    }
 
     {
         const juce::ScopedLock sl (thumbLock);
@@ -407,6 +495,8 @@ void AeroSeedAudioProcessor::setStateInformation (const void* data, int sizeInBy
 
     auto vt = juce::ValueTree::fromXml (*xml);
     const auto seedText = vt.getProperty ("seed").toString(), thumbText = vt.getProperty ("thumb").toString();
+    const auto imageSeedText = vt.getProperty ("imageSeed").toString(), moodStr = vt.getProperty ("imageMood").toString();
+    const auto savedMoodText = vt.getProperty ("moodText").toString();
     apvts.replaceState (vt);
 
     if (thumbText.isNotEmpty())
@@ -419,7 +509,20 @@ void AeroSeedAudioProcessor::setStateInformation (const void* data, int sizeInBy
         }
     }
 
-    if (seedText.isNotEmpty()) { currentSeed.store ((uint64_t) seedText.getHexValue64()); seedValid.store (true); }
+    if (seedText.isNotEmpty()) { activeSeed.store ((uint64_t) seedText.getHexValue64()); activeValid.store (true); }
+
+    // image : seed d'origine (les anciens projets n'avaient que "seed", qui etait celle de l'image)
+    if (imageSeedText.isNotEmpty())                   { imageSeed.store ((uint64_t) imageSeedText.getHexValue64()); imageValid.store (true); }
+    else if (seedText.isNotEmpty() && thumbText.isNotEmpty()) { imageSeed.store (activeSeed.load()); imageValid.store (true); }
+
+    {
+        const juce::ScopedLock sl (moodLock);
+        moodText = savedMoodText;
+        textMood = aeromood::parse (moodText.toStdString());
+        const auto parts = juce::StringArray::fromTokens (moodStr, ",", "");
+        imageMoodValid = parts.size() == aerodsp::numMoodAxes;
+        for (int a = 0; a < aerodsp::numMoodAxes && imageMoodValid; ++a) imageMood.v[a] = juce::jlimit (-1.0, 1.0, parts[a].getDoubleValue());
+    }
 }
 
 juce::AudioProcessorEditor* AeroSeedAudioProcessor::createEditor() { return new AeroSeedAudioProcessorEditor (*this); }

@@ -6,6 +6,7 @@
 #include "SpectrumView.h"
 #include "EditPanel.h"
 #include "IntroLayer.h"
+#include "MoodPanel.h"
 
 namespace aero
 {
@@ -112,6 +113,7 @@ private:
     void rebuildBackground();
     void refreshModules();
     void refreshSeedInfo();
+    void layoutSpectrum();
 
     AeroSeedAudioProcessor& proc;
     aero::AeroLookAndFeel laf;
@@ -122,6 +124,10 @@ private:
     bool isDragging = false, needChoice = true;
     double lastTime = 0.0;
     float sinceOpen = 0.0f, chooseTime = 0.0f, openTime = 0.0f;
+    float moodAnim = 0.0f;                 // 0 = panneau Mood ferme, 1 = ouvert (spectre repousse)
+    bool  moodOpen = false;
+    uint64_t lastSeedShown = 0;
+    bool  lastAeroShown = false;
     juce::uint32 lastTrailMs = 0;
 
     aero::Bubbles bubbles;
@@ -132,6 +138,8 @@ private:
     // composants (ordre d'ajout = ordre d'affichage)
     aero::SpectrumView spectrum;
     juce::TextButton viewImage, viewSpectrum;
+    aero::MoodPanel moodPanel;
+    juce::TextButton moodButton;
     aero::SeedChip seedChip;
     juce::TextButton wallpaperButton;
     std::array<std::unique_ptr<aero::ModuleCard>, 5> cards;
